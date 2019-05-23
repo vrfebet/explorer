@@ -8,7 +8,7 @@ var mongoose = require('mongoose'),
 	settings = require('../lib/settings'),
 	fs = require('fs');
 
-// log proces sync
+// log proces sync - https://github.com/log4js-node/log4js-node
 const log4js = require('log4js');
 
 log4js.configure({
