@@ -8,7 +8,28 @@ var mongoose = require('mongoose'),
 	settings = require('../lib/settings'),
 	fs = require('fs');
 
-var MaxPerWorker = 2000;
+// log proces sync - https://github.com/log4js-node/log4js-node
+const log4js = require('log4js');
+
+log4js.configure({
+  appenders:{ 
+    everything: { type: 'file', filename: 'sync_block.log', maxLogSize: 10485760, backups: 10, compress: true }, 
+    logsBlock: { type: 'file', filename: 'BlocksGet.log', maxLogSize: 10485760, backups: 10, compress: true }, 
+    console: { type: 'console' }  
+    },
+      
+  categories:{
+    default: { appenders: ['console','everything'], level: 'info'},
+    BlocksGet: { appenders: ['console','logsBlock'], level: 'debug'},
+    OnlyShow: { appenders: ['console'], level: 'trace'}               
+    },
+  disableClustering: true
+});
+const logger = log4js.getLogger();
+const onlyConsole = log4js.getLogger('OnlyShow');     
+const blocksLog = log4js.getLogger('BlocksGet');     
+
+var MaxPerWorker = 20;
 const cluster = require('cluster');
 const numCPUs = require('os').cpus().length;
 
@@ -67,7 +88,8 @@ function create_lock(cb) {
 		var fname = './tmp/' + database + '.pid';
 		fs.appendFile(fname, process.pid, function(err) {
 			if (err) {
-				console.log("Error: unable to create %s", fname);
+				//console.log("Error: unable to create %s", fname);
+				logger.error("Error: unable to create %s", fname);
 				process.exit(1);
 			} else {
 				return cb();
@@ -83,7 +105,8 @@ function remove_lock(cb) {
 		var fname = './tmp/' + database + '.pid';
 		fs.unlink(fname, function(err) {
 			if (err) {
-				console.log("unable to remove lock: %s", fname);
+				//console.log("unable to remove lock: %s", fname);
+				logger.error("unable to remove lock: %s", fname);
 				process.exit(1);
 			} else {
 				return cb();
@@ -143,22 +166,27 @@ dbString = dbString + '/' + settings.dbsettings.database;
 
 is_locked(function(exists) {
 	if (exists && cluster.isMaster) {
-		console.log("Script already running..");
+		//console.log("Script already running..");
+		onlyConsole.trace("Script already running..");
 		process.exit(0);
 	} else {
 		create_lock(function() {
-			console.log("script launched with pid: " + process.pid);
+			//console.log("script launched with pid: " + process.pid);
+			logger.info("script launched with pid: " + process.pid);
 			mongoose.connect(dbString, {
 				useNewUrlParser: true
 			}, function(err) {
 				if (err) {
-					console.log('Unable to connect to database: %s', dbString);
-					console.log('Aborting');
+					//console.log('Unable to connect to database: %s', dbString);
+					//console.log('Aborting');
+					onlyConsole.trace('Unable to connect to database: %s', dbString);
+					onlyConsole.trace('Aborting');
 					exit();
 				} else if (database == 'index') {
 					db.check_stats(settings.coin, function(exists) {
 						if (exists == false) {
-							console.log('Run \'npm start\' to create database structures before running this script.');
+							//console.log('Run \'npm start\' to create database structures before running this script.');
+							onlyConsole.trace('Run \'npm start\' to create database structures before running this script.');
 							exit();
 						} else {
 							if (cluster.isMaster) {
@@ -191,7 +219,9 @@ is_locked(function(exists) {
 															}, {
 																last: 0,
 															}, function() {
-																console.log('index cleared (reindex)');
+																//console.log('index cleared (reindex)');
+                                onlyConsole.trace('index cleared (reindex)');
+                                
 															});
 														});
 													});
@@ -213,7 +243,8 @@ is_locked(function(exists) {
                       } else {
                         numWorkersNeeded = Math.round((stats.count - stats.last) / MaxPerWorker);
                       }
-                      console.log("Workers needed: %s. NumThreads: %s. BlocksToGet %s. Per Worker: %s",numWorkersNeeded, numThreads, BlocksToGet, MaxPerWorker, stats.count, stats.last);
+                      //console.log("Workers needed: %s. NumThreads: %s. BlocksToGet %s. Per Worker: %s",numWorkersNeeded, numThreads, BlocksToGet, MaxPerWorker, stats.count, stats.last);
+                      logger.info("Workers needed: %s. NumThreads: %s. BlocksToGet %s. Per Worker: %s",numWorkersNeeded, numThreads, BlocksToGet, MaxPerWorker, stats.count, stats.last);
                       //exit();
                       //console.log(`Master ${process.pid} is running`);
                       // Fork workers.;
@@ -235,12 +266,15 @@ is_locked(function(exists) {
 
 
                       cluster.on('message', function(worker, msg) {
-                        console.log(`worker ${worker.id} died`);
+                        //console.log(`worker ${worker.id} died`);
+                        logger.info(`worker ${worker.id} died`);
                         if (msg.msg == "done") {
                           worker.disconnect();
-                          console.log(`worker ${msg.pid} died`);
+                          //console.log(`worker ${msg.pid} died`);
+                          logger.info(`worker ${msg.pid} died`);
                           numWorkersNeeded = numWorkersNeeded - 1;
-                          console.log("There are %s workers still needed", numWorkersNeeded);
+                          //console.log("There are %s workers still needed", numWorkersNeeded);
+                          logger.info("There are %s workers still needed", numWorkersNeeded);
                           if (numWorkersNeeded < 0) {
                             var e_timer = new Date().getTime();
                             db.update_richlist('received', function(){
@@ -252,13 +286,15 @@ is_locked(function(exists) {
                                         Stats.updateOne({coin: coin}, {
                                           last: stats.count
                                         }, function() {});
-                                        console.log('reindex complete (block: %s)', nstats.last);
+                                        //console.log('reindex complete (block: %s)', nstats.last);
+                                        logger.info('reindex complete (block: %s)', nstats.last);
                                         var stats = {
                                           tx_count: txcount,
                                           address_count: acount,
                                           seconds: (e_timer - s_timer) / 1000,
                                         };
-                                        console.log("Sync had a run time of %s and now has %s transactions and %s acount recorded", stats.seconds.toHHMMSS(), stats.tx_count, stats.address_count);
+                                        //console.log("Sync had a run time of %s and now has %s transactions and %s acount recorded", stats.seconds.toHHMMSS(), stats.tx_count, stats.address_count);
+                                        logger.info("Sync had a run time of %s and now has %s transactions and %s acount recorded", stats.seconds.toHHMMSS(), stats.tx_count, stats.address_count);
                                         exit();
                                       });
                                     });
@@ -282,7 +318,8 @@ is_locked(function(exists) {
                             highestBlock = Math.round(startAtBlock + MaxPerWorker) - 1
                           }
                         } else {
-                          console.log('Unknown message:', msg);
+                          //console.log('Unknown message:', msg);
+                          logger.info('Unknown message:', msg);
                         }
                       });
                     }else{
@@ -292,7 +329,8 @@ is_locked(function(exists) {
                   });
 								});
 							} else {
-                console.log("Worker [%s] %s is starting, start at index %s and end at index %s", 
+                //console.log("Worker [%s] %s is starting, start at index %s and end at index %s", 
+                logger.info("Worker [%s] %s is starting, start at index %s and end at index %s", 
                   cluster.worker.process.env['wid'], 
                   cluster.worker.process.pid, 
                   cluster.worker.process.env['start'], 
